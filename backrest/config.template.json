@@ -24,11 +24,11 @@
         "/source/scratch/backup/vault"
       ],
       "schedule": {
-        "cron": "0 0 * * 1",
+        "cron": "0 8 * * 1",
         "clock": "CLOCK_LOCAL"
       },
       "retention": {
-        "policyKeepLastN": 1
+        "policyKeepLastN": 8
       },
       "skipIfUnchanged": true
     },
