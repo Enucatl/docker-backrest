@@ -20,7 +20,7 @@
       "repo": "b2-enucatl-restic",
       "paths": [
         "/source/var/lib/docker/100000.100000/volumes/paperless-ai_export/_data",
-        "/source/var/lib/docker/100000.100000/volumes/infra_certificates/_data/keys.json",
+        "/source/var/lib/docker/100000.100000/volumes/infra_vault_unseal/_data/key",
         "/source/scratch/backup/vault"
       ],
       "schedule": {

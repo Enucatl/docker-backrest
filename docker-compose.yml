@@ -7,12 +7,17 @@ services:
     command:
       - /bin/sh
       - -c
-      - chown -R 175200010:175200010 /data /config /cache /tmp
+      - chown -R 175200010:175200010 /data /config /cache /tmp && chmod g+r /vault-unseal/key
     volumes:
       - data:/data
       - configuration:/config
       - cache:/cache
       - tmp:/tmp
+      - type: bind
+        source: /var/lib/docker/100000.100000/volumes/infra_vault_unseal/_data/key
+        target: /vault-unseal/key
+        bind:
+          create_host_path: false
 
   backrest:
     extends:
@@ -23,6 +28,9 @@ services:
     # userns_mode: host is required for backing up remapped Docker volume paths.
     userns_mode: host
     user: "175200010:175200010"
+    # Vault container GID 100 maps to host GID 100100.
+    group_add:
+      - "100100"
     cpu_shares: 128
     security_opt:
       - no-new-privileges:true
@@ -85,8 +93,8 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: /var/lib/docker/100000.100000/volumes/infra_certificates/_data/keys.json
-        target: /source/var/lib/docker/100000.100000/volumes/infra_certificates/_data/keys.json
+        source: /var/lib/docker/100000.100000/volumes/infra_vault_unseal/_data/key
+        target: /source/var/lib/docker/100000.100000/volumes/infra_vault_unseal/_data/key
         read_only: true
         bind:
           create_host_path: false

@@ -31,7 +31,7 @@ available Documents NFS mount. The `docker` plan backs up:
 
 ```text
 /source/var/lib/docker/100000.100000/volumes/paperless-ai_export/_data
-/source/var/lib/docker/100000.100000/volumes/infra_certificates/_data/keys.json
+/source/var/lib/docker/100000.100000/volumes/infra_vault_unseal/_data/key
 /source/scratch/backup/vault
 ```
 
@@ -41,9 +41,16 @@ The `documents` plan backs up:
 /source/export/Documents
 ```
 
-Both plans run weekly on Monday using local time, keep the last snapshot, and
-skip backups when their selected sources have not changed. If
-`forbearance.home.arpa` is offline, only the `documents` plan is affected.
+Both plans run weekly on Monday using local time; `docker` keeps eight snapshots
+and `documents` keeps the last snapshot. Both skip backups when their selected
+sources have not changed. If `forbearance.home.arpa` is offline, only the
+`documents` plan is affected.
+
+The `docker` plan backs up the Vault unseal share alongside the Vault data
+archives to the encrypted B2 repository. It does not mount the complete
+initialization response in `infra_vault_recovery` or the bootstrap root token.
+Keep the restic repository password and B2 access credentials available outside
+Vault and this host so these backups can be recovered when Vault is unavailable.
 
 ## Secrets
 
@@ -87,6 +94,12 @@ visible if it is mounted later.
 
 The Backrest service runs as the dedicated FreeIPA UID/GID `175200010`, which has read access to `/export/Documents` over Kerberized NFS. A one-shot `backrest-init` service owns the named state volumes for that UID before Backrest starts.
 
+The init service also grants group read permission on the unseal key. Backrest
+joins its remapped Vault group (`100100`) and mounts only that file read-only;
+the private parent directory retains its existing permissions. Recreate the stack
+with `docker compose up -d --force-recreate` after replacing or rotating the key
+so the file mount and permissions refresh.
+
 The service does not use privileged mode, does not mount the Docker socket, and does not mount host root.
 
 ## Operations
@@ -102,6 +115,16 @@ Start Backrest:
 ```sh
 docker compose up -d
 ```
+
+Test the running Docker backup plan, restore its unseal key and newest Vault
+archive from B2, and unseal an isolated Vault using the restored files:
+
+```sh
+bash tests/backup-restore.sh
+```
+
+The test uses the running Vault image with networking disabled, keeps its Vault
+storage in temporary memory, and removes its container and restored files on exit.
 
 After first start:
 
