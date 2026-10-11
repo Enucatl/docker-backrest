@@ -1,137 +1,54 @@
 # docker-backrest
 
-Backrest/restic backup service for the selected Docker and host data paths.
+## 1. What it does
 
-## Service
+Backrest runs restic backups to Backblaze B2. Sources are mounted read-only.
 
-This Compose project runs Backrest with a fresh restic repository at:
+| Plan | Host data backed up | Schedule (Europe/Zurich) | Retention |
+| --- | --- | --- | --- |
+| `docker` | Paperless AI exports (`/var/lib/docker/100000.100000/volumes/paperless-ai_export/_data`), Vault unseal key (`/var/lib/docker/100000.100000/volumes/infra_vault_unseal/_data/key`), Vault archives (`/scratch/backup/vault`) | Monday 08:00 | Last 8 snapshots |
+| `documents` | `/export/Documents` (NFS) | Monday 00:00 | Last snapshot |
 
-```text
-b2:enucatl-backups:restic
-```
+Both plans skip unchanged data. Documents runs separately so an unavailable NFS server does not block the Docker backups.
 
-The image is pinned by digest in `docker-compose.yml`. To upgrade Backrest, resolve the current digest for the desired tag and update the image reference explicitly:
+## 2. How it is configured
 
-```sh
-docker buildx imagetools inspect ghcr.io/garethgeorge/backrest:latest
-```
+- `docker-compose.yml`: pinned image, source mounts, persistent state volumes, secrets, and Traefik/Authelia access at `backrest.${DOCKER_DOMAIN}`. No host port is published.
+- `backrest/config.template.json`: repository, backup paths, schedules, and retention. Edit this file to change backup settings.
+- `backrest/render-config.sh`: combines the template and secrets into `/config/config.json` at startup. Template or secret changes replace the generated config; ordinary restarts preserve UI edits.
 
-Backrest is exposed through Traefik and Authelia at:
-
-```text
-backrest.${DOCKER_DOMAIN}
-```
-
-No host port is published directly.
-
-## Backup Scope
-
-The configured Backrest plans separate always-local data from the intermittently
-available Documents NFS mount. The `docker` plan backs up:
-
-```text
-/source/var/lib/docker/100000.100000/volumes/paperless-ai_export/_data
-/source/var/lib/docker/100000.100000/volumes/infra_vault_unseal/_data/key
-/source/scratch/backup/vault
-```
-
-The `documents` plan backs up:
-
-```text
-/source/export/Documents
-```
-
-Both plans run weekly on Monday using local time; `docker` keeps eight snapshots
-and `documents` keeps the last snapshot. Both skip backups when their selected
-sources have not changed. If `forbearance.home.arpa` is offline, only the
-`documents` plan is affected.
-
-The `docker` plan backs up the Vault unseal share alongside the Vault data
-archives to the encrypted B2 repository. It does not mount the complete
-initialization response in `infra_vault_recovery` or the bootstrap root token.
-Keep the restic repository password and B2 access credentials available outside
-Vault and this host so these backups can be recovered when Vault is unavailable.
-
-## Secrets
-
-Compose secrets are loaded from the untracked `secrets/` directory:
-
-```text
-secrets/backrest_b2_account_id
-secrets/backrest_b2_account_key
-secrets/backrest_repo_password
-```
-
-`backrest_repo_password` is the restic repository password. Restic uses it to unlock the repository encryption keys, and it is required to verify or restore backups. Store it somewhere durable outside this repository.
-
-## Bootstrap Config
-
-Backrest state is stored in named volumes:
-
-```text
-data
-configuration
-cache
-tmp
-```
-
-On container start, `backrest/render-config.sh` renders `/config/config.json` from `backrest/config.template.json` and the Compose secrets. The generated config lives in the `configuration` volume and is not tracked.
-
-The renderer records a checksum next to the generated config and only rewrites `/config/config.json` when the rendered template or secrets change. Normal restarts do not rewrite Backrest's mutable config, but template and secret changes are applied on the next container start.
-
-Treat `backrest/config.template.json` as the source of truth for repository and plan settings. Backrest UI edits can be overwritten when the template or secrets change.
-
-## Security Boundary
-
-The service keeps the shared `docker-compose-security-baseline` limits, `no-new-privileges`, resource limits, PID limits, and read-only source mounts.
-
-`userns_mode: host` is intentional because Backrest must read userns-remapped Docker volume data under `/var/lib/docker/100000.100000`.
-
-The stable `/export` parent is bind-mounted with `rslave` propagation rather
-than mounting `/export/Documents` directly. This allows Backrest to start while
-the systemd NFS automount is unavailable and makes the Documents submount
-visible if it is mounted later.
-
-The Backrest service runs as the dedicated FreeIPA UID/GID `175200010`, which has read access to `/export/Documents` over Kerberized NFS. A one-shot `backrest-init` service owns the named state volumes for that UID before Backrest starts.
-
-The init service also grants group read permission on the unseal key. Backrest
-joins its remapped Vault group (`100100`) and mounts only that file read-only;
-the private parent directory retains its existing permissions. Recreate the stack
-with `docker compose up -d --force-recreate` after replacing or rotating the key
-so the file mount and permissions refresh.
-
-The service does not use privileged mode, does not mount the Docker socket, and does not mount host root.
-
-## Operations
-
-Validate the Compose model:
+Apply changes with:
 
 ```sh
-docker compose config
+docker compose up -d --force-recreate
 ```
 
-Start Backrest:
+Backrest runs as UID/GID `175200010` for NFS access. The init service sets state-volume ownership and grants read access to the Vault key; recreate the stack after replacing that key.
+
+## 3. How it connects to B2
+
+Restic uses B2 directly at `b2:enucatl-backups:restic`: bucket `enucatl-backups`, prefix `restic`. Backrest initializes the repository automatically.
+
+Supply these untracked Compose secret files:
+
+| File | Used for |
+| --- | --- |
+| `secrets/backrest_b2_account_id` | `B2_ACCOUNT_ID` authentication |
+| `secrets/backrest_b2_account_key` | `B2_ACCOUNT_KEY` authentication |
+| `secrets/backrest_repo_password` | Restic repository encryption and decryption |
+
+Keep these credentials outside Vault and this host so recovery remains possible if either is unavailable.
+
+## 4. How to check it works
 
 ```sh
-docker compose up -d
+docker compose config --quiet  # Validate Compose configuration.
+docker compose ps             # Check container health.
+bash tests/backup-restore.sh   # Exercise backup and recovery.
 ```
 
-Test the running Docker backup plan, restore its unseal key and newest Vault
-archive from B2, and unseal an isolated Vault using the restored files:
+The healthcheck requests Backrest's local HTTP endpoint every 30 seconds. It checks service availability, not backup recovery.
 
-```sh
-bash tests/backup-restore.sh
-```
+The recovery test runs the `docker` plan, waits for success, restores the Vault key and newest archive from B2 with restic verification, compares the key byte for byte, and starts and unseals an isolated Vault from the restored data. Its container has no network; temporary storage and restored files are removed on exit. It requires Docker, `jq`, and the running `infra-vault-1` container.
 
-The test uses the running Vault image with networking disabled, keeps its Vault
-storage in temporary memory, and removes its container and restored files on exit.
-
-After first start:
-
-1. Confirm `backrest.${DOCKER_DOMAIN}` loads through Authelia.
-2. Let Backrest initialize `b2:enucatl-backups:restic`.
-3. Run the `docker` plan manually once.
-4. Verify a snapshot exists.
-5. Restore at least one small file to a temporary path before relying on the migration.
-
-Keep the old Duplicati configuration volume and remote backup data until one manual and one scheduled Backrest run have both been restore-tested.
+This test does not cover the `documents` plan or scheduled execution. Check scheduled runs in the Backrest UI and restore a Documents file separately.
