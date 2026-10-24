@@ -114,6 +114,7 @@ services:
 
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=backrest_traefik"
       - "traefik.http.routers.backrest.rule=Host(`backrest.${DOCKER_DOMAIN}`)"
       - "traefik.http.routers.backrest.entrypoints=https"
       - "traefik.http.routers.backrest.tls=true"
@@ -122,7 +123,7 @@ services:
       - "traefik.http.services.backrest.loadbalancer.server.port=9898"
 
     networks:
-      - traefik_proxy
+      - backrest_traefik
 
 
 volumes:
@@ -132,8 +133,9 @@ volumes:
   tmp:
 
 networks:
-  traefik_proxy:
-    external: true
+  backrest_traefik:
+    name: backrest_traefik
+    enable_ipv6: true
 
 secrets:
   backrest_b2_account_id:
